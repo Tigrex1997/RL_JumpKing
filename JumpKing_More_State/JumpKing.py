@@ -23,10 +23,126 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchvision
 import random
 import time
 
+import cv2
+import matplotlib
+import matplotlib.pyplot as plt
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Generate more states according to the window around the king
+def Get_states(semantic_ref_array, cur_level, cur_rect_x, cur_rect_y):
+	# Init
+	level_selected = cur_level
+	block_w = 60  # 3*rect_width
+	block_h = 24  # 1*rect_height
+	window_w = 3*block_w
+	window_h = 3*block_h
+
+	# 1 Padding
+	temp_array = semantic_ref_array[level_selected]
+	origin_c = temp_array.shape[0]
+	origin_h = temp_array.shape[1]
+	origin_w = temp_array.shape[2]
+	padded_h = origin_h + 2*block_h
+	padded_w = origin_w + 2*(block_w + int(block_w/3))
+	array_padded = np.ones((origin_c, padded_h, padded_w))
+	# print('padded: ', array_padded.shape)
+	array_padded[0:origin_c, block_h:(block_h + origin_h), (block_w + int(block_w/3)):(block_w + int(block_w/3) + origin_w)] = temp_array[:, :, :]
+	#matplotlib.image.imsave('Temp/test_padding.png', array_padded.transpose(1, 2, 0))
+
+	# Get states per block
+	LT_x = round(cur_rect_x) + block_w + int(block_w/3)
+	LT_y = round(cur_rect_y) + block_h + int(origin_h/2)
+	block_1 = array_padded[0, (LT_y - block_h):LT_y, (LT_x - (block_w + int(block_w/3))):(LT_x - int(block_w/3))]
+	block_2 = array_padded[0, (LT_y - block_h):LT_y, (LT_x - int(block_w/3)):(LT_x + int(2*block_w/3))]
+	block_3 = array_padded[0, (LT_y - block_h):LT_y, (LT_x + int(2*block_w/3)):(LT_x + int(5*block_w/3))]
+	block_4 = array_padded[0, LT_y:(LT_y + block_h), (LT_x - (block_w + int(block_w/3))):(LT_x - int(block_w/3))]
+	block_5 = array_padded[0, LT_y:(LT_y + block_h), (LT_x - int(block_w/3)):(LT_x + int(2*block_w/3))]
+	block_6 = array_padded[0, LT_y:(LT_y + block_h), (LT_x + int(2*block_w/3)):(LT_x + int(5*block_w/3))]
+	block_7 = array_padded[0, (LT_y + block_h):(LT_y + 2*block_h), (LT_x - (block_w + int(block_w/3))):(LT_x - int(block_w/3))]
+	block_8 = array_padded[0, (LT_y + block_h):(LT_y + 2*block_h), (LT_x - int(block_w/3)):(LT_x + int(2*block_w/3))]
+	block_9 = array_padded[0, (LT_y + block_h):(LT_y + 2*block_h), (LT_x + int(2 * block_w / 3)):(LT_x + int(5 * block_w / 3))]
+	# print('rect_x: ', round(cur_rect_x))
+	# print('rect_y: ', round(cur_rect_y))
+	# print('LT_x: ', LT_x)
+	# print('LT_y: ', LT_y)
+	# print('1', block_1.shape)
+	# print('2', block_2.shape)
+	# print('3', block_3.shape)
+	# print('4', block_4.shape)
+	# print('6', block_6.shape)
+	# print('7', block_7.shape)
+	# print('8', block_8.shape)
+	# print('9', block_9.shape)
+	#matplotlib.image.imsave('Temp/test_block_check.png', array_padded[:, LT_y:(LT_y + block_h), (LT_x - int(block_w/3)):(LT_x + int(2*block_w/3))].transpose(1, 2, 0))
+
+	output_states = np.zeros((3, 3))
+	# print('sum1: ', np.sum(block_1))
+	# print('sum2: ', np.sum(block_2))
+	# print('sum3: ', np.sum(block_3))
+	# print('sum4: ', np.sum(block_4))
+	# print('sum6: ', np.sum(block_6))
+	# print('sum7: ', np.sum(block_7))
+	# print('sum8: ', np.sum(block_8))
+	# print('sum9: ', np.sum(block_9))
+	output_states[0, 0] = (int(np.sum(block_1)) != 0)
+	output_states[0, 1] = (int(np.sum(block_2)) != 0)
+	output_states[0, 2] = (int(np.sum(block_3)) != 0)
+	output_states[1, 0] = (int(np.sum(block_4)) != 0)
+	output_states[1, 1] = (int(np.sum(block_5)) != 0)
+	output_states[1, 2] = (int(np.sum(block_6)) != 0)
+	output_states[2, 0] = (int(np.sum(block_7)) != 0)
+	output_states[2, 1] = (int(np.sum(block_8)) != 0)
+	output_states[2, 2] = (int(np.sum(block_9)) != 0)
+	#print(output_states)
+
+
+	return output_states
+
+
+# Create 43 ref arrays
+def Create_ref_array():
+	# Init resized size
+    resized_h = 720
+    resized_w = 480
+    # Reshape and resize the semantic pictures of 43 levels
+    folder_path = "./Semantic_MG"
+    temp_array = np.zeros((43, 3, resized_h, resized_w))
+    temp_count = 0
+    path_list = os.listdir(folder_path)
+    path_list.sort(key=lambda x: int(x[:-4]))
+
+    for filename in path_list:
+        #print(filename)  # just for test
+        # img is used to store the image data
+        img = cv2.imread(folder_path + "/" + filename)
+        # Combine the current level and the next level
+        if temp_count >= 0 and temp_count < 42:
+            next_img = cv2.imread(folder_path + "/" + path_list[temp_count + 1])
+            img = np.append(next_img, img, axis=0)
+        else:
+            pass
+        img_resized = cv2.resize(img, (resized_w, resized_h))/255
+        #print(img_resized.shape)
+        #matplotlib.image.imsave('Temp/test{}.png'.format(temp_count), img_resized)
+        img_CHW = img_resized.transpose(2, 0, 1)  # (C, H, W)
+        #img_tensor = torch.tensor(img_CHW)
+        temp_array[temp_count, :, :, :] = img_CHW[:, :, :]
+        temp_count += 1
+
+    #temp_test = temp_tensor[5, :, :, :].numpy()
+    #print(temp_test.shape)
+    #print(temp_test)
+    #temp_test = temp_test.transpose(1, 2, 0)
+    #matplotlib.image.imsave('Temp/test{}.png'.format(temp_count), temp_test)
+
+
+    return temp_array
+
 
 class NETWORK(torch.nn.Module):
 	def __init__(self, input_dim: int, output_dim: int, hidden_dim: int) -> None:
@@ -70,15 +186,16 @@ class DDQN(object):
 	def __init__(
 			self
 	):
-		self.target_net = NETWORK(7, 4, 32).to(device)
-		self.eval_net = NETWORK(7, 4, 32).to(device)
+		self.num_states = 12
+		self.target_net = NETWORK(self.num_states, 4, 32).to(device)
+		self.eval_net = NETWORK(self.num_states, 4, 32).to(device)
 
 		self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=0.001)
 		self.criterion = nn.MSELoss()
 
 		self.memory_counter = 0
 		self.memory_size = 50000
-		self.memory = np.zeros((self.memory_size, 17))
+		self.memory = np.zeros((self.memory_size, self.num_states*2 + 3))
 
 		self.epsilon = 1.0
 		self.epsilon_decay = 0.9995
@@ -128,11 +245,11 @@ class DDQN(object):
 			batch_index = np.random.choice(self.memory_counter, size=self.batch_size)
 
 		batch_memory = self.memory[batch_index]
-		batch_s0 = torch.tensor(batch_memory[:, :7]).float().to(device)
-		batch_a0 = torch.tensor(batch_memory[:, 7:8]).long().to(device)
-		batch_r = torch.tensor(batch_memory[:, 8:9]).float().to(device)
-		batch_s1 = torch.tensor(batch_memory[:, 9:16]).float().to(device)
-		batch_sign = torch.tensor(batch_memory[:, 16:17]).long().to(device)
+		batch_s0 = torch.tensor(batch_memory[:, :self.num_states]).float().to(device)
+		batch_a0 = torch.tensor(batch_memory[:, self.num_states:self.num_states+1]).long().to(device)
+		batch_r = torch.tensor(batch_memory[:, self.num_states+1:self.num_states+2]).float().to(device)
+		batch_s1 = torch.tensor(batch_memory[:, self.num_states+2:2*self.num_states+2]).float().to(device)
+		batch_sign = torch.tensor(batch_memory[:, 2*self.num_states+2:2*self.num_states+3]).long().to(device)
 
 		q_eval = self.eval_net(batch_s0).gather(1, batch_a0)
 
@@ -192,6 +309,9 @@ class JKGame:
 
 		self.abs_total_height = 43*360-144
 
+		# 43 semantic pictures
+		self.semantic_ref_array = Create_ref_array()
+
 		# New
 		self.flag_stuck = 0
 		self.nearest_platform_dist = 0
@@ -211,7 +331,8 @@ class JKGame:
 
 		self.step_counter = 0
 		done = False
-		state = [self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, 0, 0, 0]
+		state = [self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, #0,
+				 0, 0, 0, 0, 0, 0, 0, 0]  # 12 states
 
 		self.visited = {}
 		self.visited[(self.king.levels.current_level, self.king.y)] = 1
@@ -234,15 +355,21 @@ class JKGame:
 
 	
 	def step(self, action):
-		s0 = [self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, self.flag_stuck,
-			  self.nearest_platform_dist, self.nearest_platform_angle]
+		collision_states = Get_states(
+			self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y
+		)
+		s0 = [
+			self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, #self.flag_stuck,
+			collision_states[0, 0], collision_states[0, 1], collision_states[0, 2], collision_states[1, 0],
+			collision_states[1, 2], collision_states[2, 0], collision_states[2, 1], collision_states[2, 2]
+		]
 		old_level = self.king.levels.current_level
 		old_x = self.king.x
 		old_y = self.king.y
 
 		#old_y = (self.king.levels.max_level - self.king.levels.current_level) * 360 + self.king.y
 		while True:
-			self.clock.tick(200*self.fps)
+			self.clock.tick(500*self.fps)
 			self._check_events()
 			if not os.environ["pause"]:
 				if not self.move_available():
@@ -264,34 +391,51 @@ class JKGame:
 					self.flag_stuck = 1
 				else:
 					self.flag_stuck = 0
-				# Judge dist and angle
-				min_dist2 = 30000
-				for platform in self.levels.levels[self.levels.current_level].platforms:
-					if platform.y > self.king.y:
-						#print(self.nearest_platform_dist)
-						dist2 = (platform.x - self.king.x) ** 2 + (platform.y - self.king.y) ** 2
-						if dist2 < min_dist2 and platform.x != self.king.x:
-							min_dist2 = dist2
-							self.nearest_platform_dist = min_dist2 ** (1 / 2)
-							self.nearest_platform_angle = (platform.y - self.king.y) / (platform.x - self.king.x)
+				# # Judge dist and angle
+				# min_dist2 = 30000
+				# for platform in self.levels.levels[self.levels.current_level].platforms:
+				# 	if platform.y > self.king.y:
+				# 		#print(self.nearest_platform_dist)
+				# 		dist2 = (platform.x - self.king.x) ** 2 + (platform.y - self.king.y) ** 2
+				# 		if dist2 < min_dist2 and platform.x != self.king.x:
+				# 			min_dist2 = dist2
+				# 			self.nearest_platform_dist = min_dist2 ** (1 / 2)
+				# 			self.nearest_platform_angle = (platform.y - self.king.y) / (platform.x - self.king.x)
 
-				state = [self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, self.flag_stuck,
-						 self.nearest_platform_dist, self.nearest_platform_angle]
+				# state = [self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, self.flag_stuck,
+				# 		 self.nearest_platform_dist, self.nearest_platform_angle]
+
+				# Judge collision states
+				collision_states = Get_states(
+					self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y
+				)
+				state = [
+					self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, #self.flag_stuck,
+					collision_states[0, 0], collision_states[0, 1], collision_states[0, 2], collision_states[1, 0],
+					collision_states[1, 2], collision_states[2, 0], collision_states[2, 1], collision_states[2, 2]
+				]
 
 				##################################################################################################
 				# Define the reward from environment                                                             #
 				##################################################################################################
 				# Judge whether the king is stuck
-				if self.flag_stuck == 0:
-					if self.king.levels.current_level > old_level or (
+				# if self.flag_stuck == 0:
+				# 	if self.king.levels.current_level > old_level or (
+				# 				self.king.levels.current_level == old_level and self.king.y < old_y):
+				# 		reward = 0
+				# 	# elif self.king.levels.current_level < old_level:
+				# 	# reward = -1
+				# 	else:
+				# 		reward = -1
+				# else:
+				# 	reward = -10
+				if self.king.levels.current_level > old_level or (
 								self.king.levels.current_level == old_level and self.king.y < old_y):
-						reward = 0
-					# elif self.king.levels.current_level < old_level:
-					# reward = -1
-					else:
-						reward = -1
+					reward = 0
+				# elif self.king.levels.current_level < old_level:
+				# reward = -1
 				else:
-					reward = -10
+					reward = -1
 
 				s1 = state
 				reward = reward - self.Phi(s0, s1)
@@ -319,6 +463,9 @@ class JKGame:
 			self._update_guistuff()
 			self._update_audio()
 			pygame.display.update()
+
+			# Test when playing by players
+			temp_players = Get_states(self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y)
 
 	def _check_events(self):
 
@@ -495,6 +642,17 @@ def train():
 
 			
 if __name__ == "__main__":
+	# ------------- Play the game manually -------------#
 	# Game = JKGame()
 	# Game.running()
+
+	# ------------- Play the game by agent -------------#
+	# Print the information
+	print("PyTorch Version: ", torch.__version__)
+	print("Torchvision Version: ", torchvision.__version__)
+	# Detect if we have a GPU available
+	if torch.cuda.is_available():
+		print("Using the GPU!")
+	else:
+		print("WARNING: Could not find GPU! Using CPU only.")
 	train()
