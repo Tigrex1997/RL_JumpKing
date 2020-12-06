@@ -1,0 +1,10 @@
+1. Semantic: 0->no collision; 1->collision
+2. About king:
+    rect:
+    king.rect_x
+    king.rect_y
+    king.rect_width
+    king.rect_height
+3. window:
+    9*9
+4. abandon stuck temp  --> 12 states
