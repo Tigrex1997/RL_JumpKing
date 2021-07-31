@@ -31,6 +31,8 @@ import cv2
 import matplotlib
 import matplotlib.pyplot as plt
 
+import pickle
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Generate more states according to the window around the king
@@ -263,6 +265,11 @@ class DDQN(object):
 		self.episode_counter = 0
 
 		self.target_net.load_state_dict(self.eval_net.state_dict())
+
+	def weights_load(self, weights_path):
+		self.target_net.load_state_dict(torch.load(weights_path))
+		self.eval_net.load_state_dict(torch.load(weights_path))
+		#print('weights loaded successfully!')
 
 	def memory_store(self, s0, a0, r, s1, sign):
 		transition = np.concatenate((s0, [a0, r], s1, [sign]))
@@ -504,7 +511,7 @@ class JKGame:
 				####################################################################################################
 
 				done = True if self.step_counter > self.max_step else False
-				return s1, reward, done
+				return s1, reward, done, self.step_counter
 
 	def running(self):
 		"""
@@ -671,7 +678,7 @@ class JKGame:
 			pygame.mixer.Channel(channel).set_volume(float(os.environ.get("volume")))
 
 
-def train():
+def train(flag_load, flag_not_record):
 	action_dict = {
 		0: 'right',
 		1: 'left',
@@ -682,18 +689,37 @@ def train():
 	}
 	
 	agent = DDQN()
+	if flag_load == 1:
+		weights_path = 'Weights/weights_episode35.pth'  # weights file path that is used to be loaded
+		agent.weights_load(weights_path)
+		print('Weights file loaded!')
+	else:
+		print('No weights to be loaded, train from scratch!')
 	env = JKGame(max_step=5000, cheating_level=0)   # specify the starting level by cheating_level
 	print(env.cheating_location)
-	num_episode = 100000
+	num_episode = 100
+	avg_reward_sum = 0
+	avg_reward_hist = []
+	steps_hist = []
 
 	for i in range(num_episode):
 		done, state = env.reset()
+		flag_fist_arrive = 0
 		
 		running_reward = 0
 		while not done:
 			action = agent.select_action(state)
 			#print(action_dict[action])
-			next_state, reward, done = env.step(action)
+			next_state, reward, done, temp_steps = env.step(action)
+
+			if flag_fist_arrive == 0:
+				if (next_state[0] == 1 and next_state[2] <= 180):
+					steps_hist.append(temp_steps)
+					print('Current steps: ', temp_steps)
+					with open('Reward_hist/steps_hist.data', 'wb') as filehandle:
+						pickle.dump(steps_hist, filehandle)
+					flag_fist_arrive = 1
+
 
 			# if reward < -2333:
 			# 	break
@@ -701,7 +727,30 @@ def train():
 			sign = 1 if done else 0
 			agent.train(state, action, reward, next_state, sign)
 			state = next_state
-		print ('episode: {}, reward: {}'.format(i, running_reward))
+
+		avg_reward_sum += running_reward
+		avg_reward = avg_reward_sum/(i + 1)
+		avg_reward_hist.append(avg_reward)
+		with open('Reward_hist/avg_reward_hist_list.data', 'wb') as filehandle:
+			pickle.dump(avg_reward_hist, filehandle)
+		print ('episode: {}, reward: {}, avg_reward: {}'.format(i, running_reward, avg_reward))
+
+		# save model parameters per episode
+		if flag_not_record != 1:
+			torch.save(agent.target_net.state_dict(), 'Weights/weights_episode%d.pth' % (agent.episode_counter - 1))
+			print('weights of episode %d saved!' % (agent.episode_counter - 1))
+
+	# Draw the avg reward hist
+	# x = np.arange(num_episode)
+	# plt.figure()
+	# plt.plot(x, tr_his)
+	# plt.plot(x, val_his)
+	# plt.legend(['Training top1 accuracy', 'Validation top1 accuracy'])
+	# plt.xticks(x)
+	# plt.xlabel('Epoch')
+	# plt.ylabel('Top1 Accuracy')
+	# plt.title('MiniVGG')
+	# plt.show()
 
 			
 if __name__ == "__main__":
@@ -718,4 +767,8 @@ if __name__ == "__main__":
 		print("Using the GPU!")
 	else:
 		print("WARNING: Could not find GPU! Using CPU only.")
-	train()
+
+	# Train  1. [flag_load == 0 -> no weights to load; Vice versa] 2. [flag_not_record == 0 -> record the weights]
+	flag_load = 0
+	flag_not_record = 0
+	train(flag_load, flag_not_record)

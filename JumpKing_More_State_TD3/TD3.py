@@ -34,6 +34,64 @@ import cv2
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Generate more states according to the window around the king
+def Get_states_big(semantic_ref_array, cur_level, cur_rect_x, cur_rect_y):
+	# Init
+	level_selected = cur_level
+	block_w = 20  # 1*rect_width
+	block_h = 24  # 1*rect_height
+	num_blocks = 133  # 133 blocks in total
+	window_w = 19*block_w  # 380 pixs
+	window_h = 7*block_h  # 168 pixs
+
+	# 1 Padding
+	temp_array = semantic_ref_array[level_selected]
+	origin_c = temp_array.shape[0]
+	origin_h = temp_array.shape[1]
+	origin_w = temp_array.shape[2]
+	padded_h = origin_h + 5*block_h + block_h
+	padded_w = origin_w + 2*9*block_w
+	array_padded = np.ones((origin_c, padded_h, padded_w))
+	# print('padded: ', array_padded.shape)
+	array_padded[0:origin_c, (5*block_h):(5*block_h + origin_h), (9*block_w):(9*block_w + origin_w)] = temp_array[:, :, :]
+	# matplotlib.image.imsave('Temp/test_padding.png', array_padded.transpose(1, 2, 0))
+
+	# Get states per block - 133 blocks
+	LT_x = round(cur_rect_x) + 9*block_w
+	LT_y = round(cur_rect_y) + 5*block_h + int(origin_h/2)
+	block_storage = np.zeros((num_blocks, block_h, block_w))
+	for i in range(num_blocks):
+		temp_row = int(i/19)
+		temp_col = i%19
+		cropped_h0 = LT_y - 5*block_h + temp_row*block_h
+		cropped_hf = LT_y - 5*block_h + temp_row*block_h + block_h
+		cropped_w0 = LT_x - 9*block_w + temp_col*block_w
+		cropped_wf = LT_x - 9*block_w + temp_col*block_w + block_w
+		block_storage[i, :, :] = array_padded[0, cropped_h0:cropped_hf, cropped_w0:cropped_wf]
+
+	# print('rect_x: ', round(cur_rect_x))
+	# print('rect_y: ', round(cur_rect_y))
+	# print('LT_x: ', LT_x)
+	# print('LT_y: ', LT_y)
+	# for i in range(num_blocks):
+	# 	print('block_{}'.format(i), block_storage[i].shape)
+	# matplotlib.image.imsave('Temp/test_window_check.png', array_padded[:, (LT_y - 5*block_h):(LT_y + 2*block_h), (LT_x - 9*block_w):(LT_x + 10*block_w)].transpose(1, 2, 0))
+
+	output_states_array = np.zeros((7, 19))
+	output_states_list = []
+	for i in range(num_blocks):
+		temp_row = int(i / 19)
+		temp_col = i % 19
+		flag_collision = (int(np.sum(block_storage[i])) != 0)
+		output_states_array[temp_row, temp_col] = flag_collision
+		if i != 104:
+			output_states_list.append(flag_collision)
+	# print(len(output_states_list))
+
+
+	return (output_states_array, output_states_list)
+
+
+# Generate more states according to the window around the king
 def Get_states(semantic_ref_array, cur_level, cur_rect_x, cur_rect_y):
 	# Init
 	level_selected = cur_level
@@ -758,14 +816,12 @@ class JKGame:
         self.step_counter = 0
         done = False
         # Get init collision states
-        init_collision_states = Get_states(
+        (init_collision_states_array, init_collision_states_list) = Get_states_big(
             self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y
         )
         state = [
-            self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount, #0,
-            init_collision_states[0, 0], init_collision_states[0, 1], init_collision_states[0, 2], init_collision_states[1, 0],
-            init_collision_states[1, 2], init_collision_states[2, 0], init_collision_states[2, 1], init_collision_states[2, 2]
-        ]  # 12 states
+                    self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount,  # 0
+                ] + init_collision_states_list  # 4 + 132 states
 
         self.visited = {}
         self.visited[(self.king.levels.current_level, self.king.y)] = 1
@@ -787,14 +843,12 @@ class JKGame:
         return diff_height
 
     def step(self, action):
-        collision_states = Get_states(
+        (collision_states_array, collision_states_list) = Get_states_big(
             self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y
         )
         s0 = [
-            self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount,  # self.flag_stuck,
-            collision_states[0, 0], collision_states[0, 1], collision_states[0, 2], collision_states[1, 0],
-            collision_states[1, 2], collision_states[2, 0], collision_states[2, 1], collision_states[2, 2]
-        ]
+                 self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount,  # self.flag_stuck
+             ] + collision_states_list
         old_level = self.king.levels.current_level
         old_x = self.king.x
         old_y = self.king.y
@@ -837,14 +891,13 @@ class JKGame:
                 # 		 self.nearest_platform_dist, self.nearest_platform_angle]
 
                 # Judge collision states
-                collision_states = Get_states(
+                (collision_states_array, collision_states_list) = Get_states_big(
                     self.semantic_ref_array, self.king.levels.current_level, self.king.rect_x, self.king.rect_y
                 )
                 state = [
-                    self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount,  # self.flag_stuck,
-                    collision_states[0, 0], collision_states[0, 1], collision_states[0, 2], collision_states[1, 0],
-                    collision_states[1, 2], collision_states[2, 0], collision_states[2, 1], collision_states[2, 2]
-                ]
+                            self.king.levels.current_level, self.king.x, self.king.y, self.king.jumpCount,
+                            # self.flag_stuck
+                        ] + collision_states_list
 
                 ##################################################################################################
                 # Define the reward from environment                                                             #
@@ -1043,6 +1096,7 @@ def train(args):
     time_start = time.time()        # Init start time
     ep_reward_list = []
     avg_reward_list = []
+    best_avg_reward = -5000
     total_timesteps = 0
 
     epsilon = 1
@@ -1081,6 +1135,14 @@ def train(args):
         avg_reward = np.mean(ep_reward_list[-100:])
         avg_reward_list.append(avg_reward)
 
+        # Save agent info by the best avg_reward
+        if ep%10 == 9 and avg_reward_list[-1] > best_avg_reward:
+            best_avg_reward = avg_reward_list[-1]
+            save_dict = {}
+            save_dict["best_avg_reward"] = best_avg_reward
+            save_dict["agent"] = agent
+            torch.save(save_dict, "Weights/agent.pkl")
+
 
         s = (int)(time.time() - time_start)
         agent.learn_and_update_weights_by_replay(timestep)
@@ -1097,7 +1159,7 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='td3')
-    parser.add_argument('--state_size', type=int, default=12, metavar='N', help='dimension of state')
+    parser.add_argument('--state_size', type=int, default=4+132, metavar='N', help='dimension of state')
     parser.add_argument('--action_size', type=int, default=4, metavar='N', help='dimension of action')
     parser.add_argument('--gamma', type=float, default=0.99, metavar='G', help='discounted factor')
     parser.add_argument('--tau', type=float, default=0.01, metavar='G', help='target smoothing coefficient(τ)')

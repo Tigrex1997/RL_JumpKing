@@ -8,3 +8,8 @@
 3. window:
     9*9
 4. abandon stuck temp  --> 12 states
+
+
+
+5. Parameters change:
+(1)
